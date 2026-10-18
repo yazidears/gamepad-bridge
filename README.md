@@ -10,7 +10,7 @@ Apple Silicon Mac, macOS 13 or later, and Xcode Command Line Tools:
 
 ```sh
 brew tap yazidears/wiiu
-brew install gamepad-bridge
+brew install yazidears/wiiu/gamepad-bridge
 ```
 
 Homebrew builds the capture helpers and installs the command and router setup tools.
