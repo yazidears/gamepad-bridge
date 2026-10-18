@@ -1,0 +1,773 @@
+diff --git a/hostapd/Makefile b/hostapd/Makefile
+index ca44392..09c77aa 100644
+--- a/hostapd/Makefile
++++ b/hostapd/Makefile
+@@ -42,6 +42,10 @@ CFLAGS += -DCONFIG_TESTING_OPTIONS
+ CONFIG_WPS_TESTING=y
+ endif
+ 
++ifdef CONFIG_TENDONIN
++CFLAGS += -DCONFIG_TENDONIN
++endif
++
+ ifndef CONFIG_OS
+ ifdef CONFIG_NATIVE_WINDOWS
+ CONFIG_OS=win32
+diff --git a/hostapd/defconfig b/hostapd/defconfig
+index 550db69..c963a44 100644
+--- a/hostapd/defconfig
++++ b/hostapd/defconfig
+@@ -120,6 +120,9 @@ CONFIG_EAP_TTLS=y
+ #CONFIG_WPS_UPNP=y
+ # Enable WPS support with NFC config method
+ #CONFIG_WPS_NFC=y
++# Nintendo made obfuscation changes to WPS/WPA for the Wii U <-> GamePad
++# transport network. Enable this for Wii U GamePad compatibility.
++#CONFIG_TENDONIN=y
+ 
+ # EAP-IKEv2
+ #CONFIG_EAP_IKEV2=y
+diff --git a/src/ap/ap_drv_ops.c b/src/ap/ap_drv_ops.c
+index c473491..d0cf3a3 100644
+--- a/src/ap/ap_drv_ops.c
++++ b/src/ap/ap_drv_ops.c
+@@ -316,6 +316,11 @@ int hostapd_set_sta_flags(struct hostapd_data *hapd, struct sta_info *sta)
+ 	total_flags = hostapd_sta_flags_to_drv(sta->flags);
+ 	set_flags = WPA_STA_SHORT_PREAMBLE | WPA_STA_WMM | WPA_STA_MFP |
+ 		WPA_STA_AUTHORIZED;
++#ifdef CONFIG_TENDONIN
++	/* Reassert these after the association response TX status callback. */
++	set_flags |= WPA_STA_AUTHENTICATED | WPA_STA_ASSOCIATED;
++#endif /* CONFIG_TENDONIN */
++
+ 
+ 	/*
+ 	 * All the station flags other than WPA_STA_SHORT_PREAMBLE are relevant
+diff --git a/src/ap/beacon.c b/src/ap/beacon.c
+index cec0c98..13c167f 100644
+--- a/src/ap/beacon.c
++++ b/src/ap/beacon.c
+@@ -759,7 +759,9 @@ static u8 * hostapd_probe_resp_fill_elems(struct hostapd_data *hapd,
+ 		pos = csa_pos;
+ 	}
+ 
++#ifndef CONFIG_TENDONIN
+ 	pos = hostapd_eid_supported_op_classes(hapd, pos);
++#endif /* CONFIG_TENDONIN */
+ 	pos = hostapd_eid_ht_capabilities(hapd, pos);
+ 	pos = hostapd_eid_ht_operation(hapd, pos);
+ 
+@@ -852,8 +854,21 @@ static u8 * hostapd_probe_resp_fill_elems(struct hostapd_data *hapd,
+ 	pos = hostapd_get_wpa_ie(hapd, pos, epos - pos);
+ 	pos = hostapd_get_osen_ie(hapd, pos, epos - pos);
+ 
++#ifdef CONFIG_TENDONIN
++	/* Broadcom vendor HT IE is the first configured vendor element. */
++	if (hapd->conf->vendor_elements &&
++	    wpabuf_len(hapd->conf->vendor_elements) >= 2) {
++		const u8 *vendor = wpabuf_head(hapd->conf->vendor_elements);
++		size_t first_len = 2 + vendor[1];
++		if (first_len <= wpabuf_len(hapd->conf->vendor_elements)) {
++			os_memcpy(pos, vendor, first_len);
++			pos += first_len;
++		}
++	}
++#else /* CONFIG_TENDONIN */
+ 	/* Wi-Fi Alliance WMM */
+ 	pos = hostapd_eid_wmm(hapd, pos);
++#endif /* CONFIG_TENDONIN */
+ 
+ #ifdef CONFIG_WPS
+ 	if (hapd->conf->wps_state && hapd->wps_probe_resp_ie) {
+@@ -863,6 +878,24 @@ static u8 * hostapd_probe_resp_fill_elems(struct hostapd_data *hapd,
+ 	}
+ #endif /* CONFIG_WPS */
+ 
++#ifdef CONFIG_TENDONIN
++	/* Remaining vendor elements precede the legacy WMM parameters. */
++	if (hapd->conf->vendor_elements &&
++	    wpabuf_len(hapd->conf->vendor_elements) >= 2) {
++		const u8 *vendor = wpabuf_head(hapd->conf->vendor_elements);
++		size_t first_len = 2 + vendor[1];
++		size_t vendor_len = wpabuf_len(hapd->conf->vendor_elements);
++		if (first_len <= vendor_len) {
++			os_memcpy(pos, vendor + first_len,
++				  vendor_len - first_len);
++			pos += vendor_len - first_len;
++		}
++	}
++
++	/* Wi-Fi Alliance WMM */
++	pos = hostapd_eid_wmm(hapd, pos);
++#endif /* CONFIG_TENDONIN */
++
+ #ifdef CONFIG_P2P
+ 	if ((hapd->conf->p2p & P2P_ENABLED) && params->is_p2p &&
+ 	    hapd->p2p_probe_resp_ie) {
+@@ -885,11 +918,13 @@ static u8 * hostapd_probe_resp_fill_elems(struct hostapd_data *hapd,
+ 	pos = hostapd_eid_owe_trans(hapd, pos, epos - pos);
+ 	pos = hostapd_eid_dpp_cc(hapd, pos, epos - pos);
+ 
++#ifndef CONFIG_TENDONIN
+ 	if (hapd->conf->vendor_elements) {
+ 		os_memcpy(pos, wpabuf_head(hapd->conf->vendor_elements),
+ 			  wpabuf_len(hapd->conf->vendor_elements));
+ 		pos += wpabuf_len(hapd->conf->vendor_elements);
+ 	}
++#endif /* CONFIG_TENDONIN */
+ 
+ #ifdef CONFIG_TESTING_OPTIONS
+ 	if (hapd->conf->presp_elements) {
+@@ -2235,7 +2270,9 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
+ 		hapd->cs_c_off_ecsa_beacon = csa_pos - tail - 1;
+ 	tailpos = csa_pos;
+ 
++#ifndef CONFIG_TENDONIN
+ 	tailpos = hostapd_eid_supported_op_classes(hapd, tailpos);
++#endif /* CONFIG_TENDONIN */
+ 	tailpos = hostapd_eid_ht_capabilities(hapd, tailpos);
+ 	tailpos = hostapd_eid_ht_operation(hapd, tailpos);
+ 
+@@ -2335,8 +2372,21 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
+ 	tailpos = hostapd_get_wpa_ie(hapd, tailpos, tailend - tailpos);
+ 	tailpos = hostapd_get_osen_ie(hapd, tailpos, tailend - tailpos);
+ 
++#ifdef CONFIG_TENDONIN
++	/* Broadcom vendor HT IE is the first configured vendor element. */
++	if (hapd->conf->vendor_elements &&
++	    wpabuf_len(hapd->conf->vendor_elements) >= 2) {
++		const u8 *vendor = wpabuf_head(hapd->conf->vendor_elements);
++		size_t first_len = 2 + vendor[1];
++		if (first_len <= wpabuf_len(hapd->conf->vendor_elements)) {
++			os_memcpy(tailpos, vendor, first_len);
++			tailpos += first_len;
++		}
++	}
++#else /* CONFIG_TENDONIN */
+ 	/* Wi-Fi Alliance WMM */
+ 	tailpos = hostapd_eid_wmm(hapd, tailpos);
++#endif /* CONFIG_TENDONIN */
+ 
+ #ifdef CONFIG_WPS
+ 	if (hapd->conf->wps_state && hapd->wps_beacon_ie) {
+@@ -2346,6 +2396,24 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
+ 	}
+ #endif /* CONFIG_WPS */
+ 
++#ifdef CONFIG_TENDONIN
++	/* Remaining vendor elements precede the legacy WMM parameters. */
++	if (hapd->conf->vendor_elements &&
++	    wpabuf_len(hapd->conf->vendor_elements) >= 2) {
++		const u8 *vendor = wpabuf_head(hapd->conf->vendor_elements);
++		size_t first_len = 2 + vendor[1];
++		size_t vendor_len = wpabuf_len(hapd->conf->vendor_elements);
++		if (first_len <= vendor_len) {
++			os_memcpy(tailpos, vendor + first_len,
++				  vendor_len - first_len);
++			tailpos += vendor_len - first_len;
++		}
++	}
++
++	/* Wi-Fi Alliance WMM */
++	tailpos = hostapd_eid_wmm(hapd, tailpos);
++#endif /* CONFIG_TENDONIN */
++
+ #ifdef CONFIG_P2P
+ 	if ((hapd->conf->p2p & P2P_ENABLED) && hapd->p2p_beacon_ie) {
+ 		os_memcpy(tailpos, wpabuf_head(hapd->p2p_beacon_ie),
+@@ -2368,11 +2436,13 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
+ 					tail + tail_len - tailpos);
+ 	tailpos = hostapd_eid_dpp_cc(hapd, tailpos, tail + tail_len - tailpos);
+ 
++#ifndef CONFIG_TENDONIN
+ 	if (hapd->conf->vendor_elements) {
+ 		os_memcpy(tailpos, wpabuf_head(hapd->conf->vendor_elements),
+ 			  wpabuf_len(hapd->conf->vendor_elements));
+ 		tailpos += wpabuf_len(hapd->conf->vendor_elements);
+ 	}
++#endif /* CONFIG_TENDONIN */
+ 
+ 	tail_len = tailpos > tail ? tailpos - tail : 0;
+ 
+diff --git a/src/ap/hostapd.c b/src/ap/hostapd.c
+index a05de03..2bc4540 100644
+--- a/src/ap/hostapd.c
++++ b/src/ap/hostapd.c
+@@ -2139,11 +2139,59 @@ static void hostapd_set_6ghz_sec_chan(struct hostapd_iface *iface)
+ }
+ 
+ 
++#ifdef CONFIG_TENDONIN
++/*
++ * Self-managed-regulatory drivers (Intel iwlwifi and its LAR firmware) fall
++ * back to the restrictive "00" world domain whenever the interface changes
++ * mode, which is exactly what happens while hostapd is bringing the interface
++ * up as an AP. The firmware only re-adopts a real country once it hears a
++ * Country IE from a nearby AP during a scan, and hostapd otherwise reads its
++ * channel list before any scan has happened - so every 5 GHz channel looks
++ * unavailable and channel selection fails with "not found from the channel
++ * list of the current mode".
++ *
++ * Kick off one scan and give the firmware a moment to apply the regulatory
++ * update, so the caller can re-read the channel list. This runs only after
++ * channel selection has already failed, which keeps it off the path entirely
++ * for drivers that do not self-manage their regulatory domain.
++ */
++static void hostapd_regulatory_prescan(struct hostapd_iface *iface)
++{
++	struct hostapd_data *hapd = iface->bss[0];
++	struct wpa_driver_scan_params params;
++	int i;
++
++	if (!hapd)
++		return;
++
++	os_memset(&params, 0, sizeof(params));
++	if (hostapd_driver_scan(hapd, &params) < 0) {
++		wpa_printf(MSG_DEBUG,
++			   "regulatory-prescan: could not start scan; continuing");
++		return;
++	}
++
++	/* The scan itself is asynchronous and its results are irrelevant here;
++	 * only the regulatory-domain side effect matters. */
++	for (i = 0; i < 60; i++)
++		os_sleep(0, 100000);
++	wpa_printf(MSG_DEBUG, "regulatory-prescan: done");
++}
++#endif /* CONFIG_TENDONIN */
++
++
+ static int setup_interface2(struct hostapd_iface *iface)
+ {
++#ifdef CONFIG_TENDONIN
++	int prescan_done = 0;
++#endif /* CONFIG_TENDONIN */
++
+ 	iface->wait_channel_update = 0;
+ 	iface->is_no_ir = false;
+ 
++#ifdef CONFIG_TENDONIN
++retry_after_prescan:
++#endif /* CONFIG_TENDONIN */
+ 	if (hostapd_get_hw_features(iface)) {
+ 		/* Not all drivers support this yet, so continue without hw
+ 		 * feature data. */
+@@ -2157,6 +2205,13 @@ static int setup_interface2(struct hostapd_iface *iface)
+ 		iface->is_ch_switch_dfs = false;
+ 
+ 		ret = configured_fixed_chan_to_freq(iface);
++#ifdef CONFIG_TENDONIN
++		if (ret < 0 && !prescan_done) {
++			prescan_done = 1;
++			hostapd_regulatory_prescan(iface);
++			goto retry_after_prescan;
++		}
++#endif /* CONFIG_TENDONIN */
+ 		if (ret < 0)
+ 			goto fail;
+ 
+@@ -2169,6 +2224,13 @@ static int setup_interface2(struct hostapd_iface *iface)
+ 		}
+ 
+ 		ret = hostapd_select_hw_mode(iface);
++#ifdef CONFIG_TENDONIN
++		if (ret < 0 && !prescan_done) {
++			prescan_done = 1;
++			hostapd_regulatory_prescan(iface);
++			goto retry_after_prescan;
++		}
++#endif /* CONFIG_TENDONIN */
+ 		if (ret < 0) {
+ 			wpa_printf(MSG_ERROR, "Could not select hw_mode and "
+ 				   "channel. (%d)", ret);
+diff --git a/src/ap/ieee802_11_ht.c b/src/ap/ieee802_11_ht.c
+index f90f125..a942340 100644
+--- a/src/ap/ieee802_11_ht.c
++++ b/src/ap/ieee802_11_ht.c
+@@ -35,8 +35,14 @@ u8 * hostapd_eid_ht_capabilities(struct hostapd_data *hapd, u8 *eid)
+ 
+ 	cap = (struct ieee80211_ht_capabilities *) pos;
+ 	os_memset(cap, 0, sizeof(*cap));
++#ifdef CONFIG_TENDONIN
++	/* Match the Wii U pairing AP's captured HT20 advertisement exactly. */
++	cap->ht_capabilities_info = host_to_le16(0x001c);
++	cap->a_mpdu_params = 0x19; /* 16383 bytes, 8 usec minimum spacing */
++#else /* CONFIG_TENDONIN */
+ 	cap->ht_capabilities_info = host_to_le16(hapd->iconf->ht_capab);
+ 	cap->a_mpdu_params = hapd->iface->current_mode->a_mpdu_params;
++#endif /* CONFIG_TENDONIN */
+ 	os_memcpy(cap->supported_mcs_set, hapd->iface->current_mode->mcs_set,
+ 		  16);
+ 
+@@ -96,6 +102,9 @@ u8 * hostapd_eid_ht_operation(struct hostapd_data *hapd, u8 *eid)
+ 
+ 	oper->primary_chan = hapd->iconf->channel;
+ 	oper->operation_mode = host_to_le16(hapd->iface->ht_op_mode);
++#ifdef CONFIG_TENDONIN
++	oper->ht_param |= HT_INFO_HT_PARAM_RIFS_MODE;
++#endif /* CONFIG_TENDONIN */
+ 	if (hapd->iconf->secondary_channel == 1)
+ 		oper->ht_param |= HT_INFO_HT_PARAM_SECONDARY_CHNL_ABOVE |
+ 			HT_INFO_HT_PARAM_STA_CHNL_WIDTH;
+diff --git a/src/ap/ieee802_11_shared.c b/src/ap/ieee802_11_shared.c
+index 3dd3a6a..9dfd525 100644
+--- a/src/ap/ieee802_11_shared.c
++++ b/src/ap/ieee802_11_shared.c
+@@ -362,6 +362,7 @@ void ieee802_11_sa_query_action(struct hostapd_data *hapd,
+ }
+ 
+ 
++#ifndef CONFIG_TENDONIN
+ static void hostapd_ext_capab_byte(struct hostapd_data *hapd, u8 *pos, int idx,
+ 				   bool mbssid_complete)
+ {
+@@ -478,11 +479,16 @@ static void hostapd_ext_capab_byte(struct hostapd_data *hapd, u8 *pos, int idx,
+ 		break;
+ 	}
+ }
++#endif /* CONFIG_TENDONIN */
+ 
+ 
+ u8 * hostapd_eid_ext_capab(struct hostapd_data *hapd, u8 *eid,
+ 			   bool mbssid_complete)
+ {
++#ifdef CONFIG_TENDONIN
++	/* The Wii U pairing beacon does not carry Extended Capabilities. */
++	return eid;
++#else /* CONFIG_TENDONIN */
+ 	u8 *pos = eid;
+ 	u8 len = EXT_CAPA_MAX_LEN, i;
+ 
+@@ -520,6 +526,7 @@ u8 * hostapd_eid_ext_capab(struct hostapd_data *hapd, u8 *eid,
+ 		return eid;
+ 
+ 	return eid + 2 + len;
++#endif /* CONFIG_TENDONIN */
+ }
+ 
+ 
+diff --git a/src/ap/wps_hostapd.c b/src/ap/wps_hostapd.c
+index 82d4d5f..542a895 100644
+--- a/src/ap/wps_hostapd.c
++++ b/src/ap/wps_hostapd.c
+@@ -1135,6 +1135,7 @@ int hostapd_init_wps(struct hostapd_data *hapd,
+ 		os_strdup(hapd->conf->serial_number) : NULL;
+ 	wps->config_methods =
+ 		wps_config_methods_str2bin(hapd->conf->config_methods);
++#ifndef CONFIG_TENDONIN
+ 	if ((wps->config_methods &
+ 	     (WPS_CONFIG_DISPLAY | WPS_CONFIG_VIRT_DISPLAY |
+ 	      WPS_CONFIG_PHY_DISPLAY)) == WPS_CONFIG_DISPLAY) {
+@@ -1149,6 +1150,7 @@ int hostapd_init_wps(struct hostapd_data *hapd,
+ 			   "virtual_push_button for WPS 2.0 compliance");
+ 		wps->config_methods |= WPS_CONFIG_VIRT_PUSHBUTTON;
+ 	}
++#endif /* CONFIG_TENDONIN */
+ 	os_memcpy(wps->dev.pri_dev_type, hapd->conf->device_type,
+ 		  WPS_DEV_TYPE_LEN);
+ 
+diff --git a/src/common/ieee802_11_defs.h b/src/common/ieee802_11_defs.h
+index 0fe6310..99d85cd 100644
+--- a/src/common/ieee802_11_defs.h
++++ b/src/common/ieee802_11_defs.h
+@@ -1422,7 +1422,11 @@ struct ieee80211_ampe_ie {
+ 				* 00:50:F2 */
+ #define WPA_IE_VENDOR_TYPE 0x0050f201
+ #define WMM_IE_VENDOR_TYPE 0x0050f202
++#ifdef CONFIG_TENDONIN
++#define WPS_IE_VENDOR_TYPE 0xa4c0e1f4
++#else /* CONFIG_TENDONIN */
+ #define WPS_IE_VENDOR_TYPE 0x0050f204
++#endif /* CONFIG_TENDONIN */
+ #define OUI_WFA 0x506f9a
+ #define P2P_IE_VENDOR_TYPE 0x506f9a09
+ #define WFD_IE_VENDOR_TYPE 0x506f9a0a
+diff --git a/src/common/wpa_common.c b/src/common/wpa_common.c
+index 1cfdd9a..8ce2f92 100644
+--- a/src/common/wpa_common.c
++++ b/src/common/wpa_common.c
+@@ -555,6 +555,18 @@ int wpa_pmk_to_ptk(const u8 *pmk, size_t pmk_len, const char *label,
+ 			return -1;
+ 	}
+ 
++#ifdef CONFIG_TENDONIN
++	{
++		u8 rotate_data[3];
++
++		os_memcpy(rotate_data, tmp, sizeof(rotate_data));
++		os_memmove(tmp, tmp + sizeof(rotate_data),
++			   ptk_len - sizeof(rotate_data));
++		os_memcpy(tmp + ptk_len - sizeof(rotate_data), rotate_data,
++			  sizeof(rotate_data));
++	}
++#endif /* CONFIG_TENDONIN */
++
+ 	wpa_printf(MSG_DEBUG, "WPA: PTK derivation - A1=" MACSTR " A2=" MACSTR,
+ 		   MAC2STR(addr1), MAC2STR(addr2));
+ 	wpa_hexdump(MSG_DEBUG, "WPA: Nonce1", nonce1, WPA_NONCE_LEN);
+diff --git a/src/common/wpa_common.h b/src/common/wpa_common.h
+index 1e31368..437a1e4 100644
+--- a/src/common/wpa_common.h
++++ b/src/common/wpa_common.h
+@@ -68,7 +68,11 @@ WPA_CIPHER_BIP_CMAC_256)
+ 
+ 
+ #define RSN_AUTH_KEY_MGMT_UNSPEC_802_1X RSN_SELECTOR(0x00, 0x0f, 0xac, 1)
++#ifdef CONFIG_TENDONIN
++#define RSN_AUTH_KEY_MGMT_PSK_OVER_802_1X RSN_SELECTOR(0xa4, 0xc0, 0xe1, 2)
++#else
+ #define RSN_AUTH_KEY_MGMT_PSK_OVER_802_1X RSN_SELECTOR(0x00, 0x0f, 0xac, 2)
++#endif
+ #define RSN_AUTH_KEY_MGMT_FT_802_1X RSN_SELECTOR(0x00, 0x0f, 0xac, 3)
+ #define RSN_AUTH_KEY_MGMT_FT_PSK RSN_SELECTOR(0x00, 0x0f, 0xac, 4)
+ #define RSN_AUTH_KEY_MGMT_802_1X_SHA256 RSN_SELECTOR(0x00, 0x0f, 0xac, 5)
+@@ -103,7 +107,11 @@ WPA_CIPHER_BIP_CMAC_256)
+ #if 0
+ #define RSN_CIPHER_SUITE_WRAP RSN_SELECTOR(0x00, 0x0f, 0xac, 3)
+ #endif
++#ifdef CONFIG_TENDONIN
++#define RSN_CIPHER_SUITE_CCMP RSN_SELECTOR(0xa4, 0xc0, 0xe1, 4)
++#else
+ #define RSN_CIPHER_SUITE_CCMP RSN_SELECTOR(0x00, 0x0f, 0xac, 4)
++#endif
+ #define RSN_CIPHER_SUITE_WEP104 RSN_SELECTOR(0x00, 0x0f, 0xac, 5)
+ #define RSN_CIPHER_SUITE_AES_128_CMAC RSN_SELECTOR(0x00, 0x0f, 0xac, 6)
+ #define RSN_CIPHER_SUITE_NO_GROUP_ADDRESSED RSN_SELECTOR(0x00, 0x0f, 0xac, 7)
+diff --git a/src/drivers/driver_nl80211.c b/src/drivers/driver_nl80211.c
+index e6fbad9..ae3b19b 100644
+--- a/src/drivers/driver_nl80211.c
++++ b/src/drivers/driver_nl80211.c
+@@ -3251,7 +3251,13 @@ static u32 wpa_alg_to_cipher_suite(enum wpa_alg alg, size_t key_len)
+ 	case WPA_ALG_TKIP:
+ 		return RSN_CIPHER_SUITE_TKIP;
+ 	case WPA_ALG_CCMP:
++#ifdef CONFIG_TENDONIN
++		/* The RSN IE uses Nintendo's selector, but nl80211 accepts only
++		 * the standard selector when installing an otherwise normal CCMP key. */
++		return RSN_SELECTOR(0x00, 0x0f, 0xac, 4);
++#else
+ 		return RSN_CIPHER_SUITE_CCMP;
++#endif /* CONFIG_TENDONIN */
+ 	case WPA_ALG_GCMP:
+ 		return RSN_CIPHER_SUITE_GCMP;
+ 	case WPA_ALG_CCMP_256:
+@@ -3290,7 +3296,11 @@ static u32 wpa_cipher_to_cipher_suite(unsigned int cipher)
+ 	case WPA_CIPHER_GCMP_256:
+ 		return RSN_CIPHER_SUITE_GCMP_256;
+ 	case WPA_CIPHER_CCMP:
++#ifdef CONFIG_TENDONIN
++		return RSN_SELECTOR(0x00, 0x0f, 0xac, 4);
++#else
+ 		return RSN_CIPHER_SUITE_CCMP;
++#endif /* CONFIG_TENDONIN */
+ 	case WPA_CIPHER_GCMP:
+ 		return RSN_CIPHER_SUITE_GCMP;
+ 	case WPA_CIPHER_TKIP:
+@@ -3317,7 +3327,11 @@ static int wpa_cipher_to_cipher_suites(unsigned int ciphers, u32 suites[],
+ 	if (num_suites < max_suites && ciphers & WPA_CIPHER_GCMP_256)
+ 		suites[num_suites++] = RSN_CIPHER_SUITE_GCMP_256;
+ 	if (num_suites < max_suites && ciphers & WPA_CIPHER_CCMP)
++#ifdef CONFIG_TENDONIN
++		suites[num_suites++] = RSN_SELECTOR(0x00, 0x0f, 0xac, 4);
++#else
+ 		suites[num_suites++] = RSN_CIPHER_SUITE_CCMP;
++#endif /* CONFIG_TENDONIN */
+ 	if (num_suites < max_suites && ciphers & WPA_CIPHER_GCMP)
+ 		suites[num_suites++] = RSN_CIPHER_SUITE_GCMP;
+ 	if (num_suites < max_suites && ciphers & WPA_CIPHER_TKIP)
+@@ -3341,7 +3355,13 @@ static int wpa_key_mgmt_to_suites(unsigned int key_mgmt_suites, u32 suites[],
+ 	    (key_mgmt_suites & (WPA_KEY_MGMT_ ## a))) \
+ 		suites[num_suites++] = (RSN_AUTH_KEY_MGMT_ ## b)
+ 	__AKM(IEEE8021X, UNSPEC_802_1X);
++#ifdef CONFIG_TENDONIN
++	if (num_suites < max_suites &&
++	    (key_mgmt_suites & WPA_KEY_MGMT_PSK))
++		suites[num_suites++] = RSN_SELECTOR(0x00, 0x0f, 0xac, 2);
++#else
+ 	__AKM(PSK, PSK_OVER_802_1X);
++#endif /* CONFIG_TENDONIN */
+ 	__AKM(FT_IEEE8021X, FT_802_1X);
+ 	__AKM(FT_PSK, FT_PSK);
+ 	__AKM(IEEE8021X_SHA256, 802_1X_SHA256);
+@@ -3602,6 +3622,136 @@ static int wpa_driver_nl80211_set_key(struct i802_bss *bss,
+ 	}
+ 
+ 	ret = send_and_recv_cmd(drv, msg);
++#ifdef CONFIG_TENDONIN
++	if (ret == -ENOENT && alg != WPA_ALG_NONE &&
++	    (key_flag & KEY_FLAG_PAIRWISE) && addr &&
++	    !is_broadcast_ether_addr(addr)) {
++		static const unsigned int retry_delays_us[] = { 100000, 250000,
++			500000 };
++		u32 suite = wpa_alg_to_cipher_suite(alg, key_len);
++		size_t attempt;
++
++		for (attempt = 0;
++		     attempt < ARRAY_SIZE(retry_delays_us) && ret == -ENOENT;
++		     attempt++) {
++			struct nlattr *key_attr;
++
++			wpa_printf(MSG_DEBUG,
++				   "nl80211: Tendonin PTK not ready; retry %zu/%zu after %u us",
++				   attempt + 1, ARRAY_SIZE(retry_delays_us),
++				   retry_delays_us[attempt]);
++			os_sleep(0, retry_delays_us[attempt]);
++			msg = nl80211_ifindex_msg(drv, ifindex, 0,
++						      NL80211_CMD_NEW_KEY);
++			if (!msg)
++				break;
++			key_attr = nla_nest_start(msg, NL80211_ATTR_KEY);
++			if (!key_attr ||
++			    nla_put(msg, NL80211_KEY_DATA, key_len, key) ||
++			    nla_put_u32(msg, NL80211_KEY_CIPHER, suite) ||
++			    (seq && seq_len &&
++			     nla_put(msg, NL80211_KEY_SEQ, seq_len, seq)) ||
++			    nla_put_u8(msg, NL80211_KEY_IDX, key_idx)) {
++				nl80211_nlmsg_clear(msg);
++				nlmsg_free(msg);
++				break;
++			}
++			nla_nest_end(msg, key_attr);
++			if (nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, addr) ||
++			    (link_id != -1 &&
++			     nla_put_u8(msg, NL80211_ATTR_MLO_LINK_ID, link_id))) {
++				nl80211_nlmsg_clear(msg);
++				nlmsg_free(msg);
++				break;
++			}
++			ret = send_and_recv_cmd(drv, msg);
++		}
++	}
++	if (ret == -ENOENT && alg != WPA_ALG_NONE &&
++	    (key_flag & KEY_FLAG_GROUP)) {
++		static const unsigned int retry_delays_us[] = { 100000, 250000,
++			500000 };
++		u32 suite = wpa_alg_to_cipher_suite(alg, key_len);
++		size_t attempt;
++
++		for (attempt = 0;
++		     attempt < ARRAY_SIZE(retry_delays_us) && ret == -ENOENT;
++		     attempt++) {
++			struct nlattr *key_attr;
++
++			wpa_printf(MSG_DEBUG,
++				   "nl80211: Tendonin GTK not ready; retry %zu/%zu after %u us",
++				   attempt + 1, ARRAY_SIZE(retry_delays_us),
++				   retry_delays_us[attempt]);
++			os_sleep(0, retry_delays_us[attempt]);
++			msg = nl80211_ifindex_msg(drv, ifindex, 0,
++						      NL80211_CMD_NEW_KEY);
++			if (!msg)
++				break;
++			key_attr = nla_nest_start(msg, NL80211_ATTR_KEY);
++			if (!key_attr ||
++			    nla_put(msg, NL80211_KEY_DATA, key_len, key) ||
++			    nla_put_u32(msg, NL80211_KEY_CIPHER, suite) ||
++			    (seq && seq_len &&
++			     nla_put(msg, NL80211_KEY_SEQ, seq_len, seq)) ||
++			    nla_put_u8(msg, NL80211_KEY_IDX, key_idx) ||
++			    nla_put_u32(msg, NL80211_KEY_TYPE,
++					NL80211_KEYTYPE_GROUP)) {
++				nl80211_nlmsg_clear(msg);
++				nlmsg_free(msg);
++				break;
++			}
++			nla_nest_end(msg, key_attr);
++			ret = send_and_recv_cmd(drv, msg);
++		}
++	}
++	if (ret == -ENOENT && alg != WPA_ALG_NONE &&
++	    (key_flag & KEY_FLAG_GROUP) && key_len <= sizeof(drv->pending_gtk)) {
++		os_memcpy(drv->pending_gtk, key, key_len);
++		drv->pending_gtk_len = key_len;
++		drv->pending_gtk_suite = wpa_alg_to_cipher_suite(alg, key_len);
++		drv->pending_gtk_idx = key_idx;
++		wpa_printf(MSG_DEBUG,
++			   "nl80211: deferring Tendonin GTK until first pairwise key");
++		ret = 0;
++	} else if (ret == 0 && (key_flag & KEY_FLAG_PAIRWISE) &&
++		   drv->pending_gtk_len) {
++		struct nlattr *key_attr;
++		int gtk_ret;
++
++		wpa_printf(MSG_DEBUG,
++			   "nl80211: replaying deferred Tendonin GTK");
++		msg = nl80211_ifindex_msg(drv, ifindex, 0,
++					      NL80211_CMD_NEW_KEY);
++		if (msg) {
++			key_attr = nla_nest_start(msg, NL80211_ATTR_KEY);
++			if (!key_attr ||
++			    nla_put(msg, NL80211_KEY_DATA, drv->pending_gtk_len,
++				    drv->pending_gtk) ||
++			    nla_put_u32(msg, NL80211_KEY_CIPHER,
++					drv->pending_gtk_suite) ||
++			    nla_put_u8(msg, NL80211_KEY_IDX,
++				       drv->pending_gtk_idx)) {
++				nl80211_nlmsg_clear(msg);
++				nlmsg_free(msg);
++				msg = NULL;
++			}
++		}
++		if (msg) {
++			nla_nest_end(msg, key_attr);
++			gtk_ret = send_and_recv_cmd(drv, msg);
++			if (gtk_ret == 0) {
++				drv->pending_gtk_len = 0;
++				wpa_printf(MSG_DEBUG,
++					   "nl80211: deferred Tendonin GTK installed");
++			} else {
++				wpa_printf(MSG_DEBUG,
++					   "nl80211: deferred Tendonin GTK still pending: %d (%s)",
++					   gtk_ret, strerror(-gtk_ret));
++			}
++		}
++	}
++#endif /* CONFIG_TENDONIN */
+ 	if ((ret == -ENOENT || ret == -ENOLINK) && alg == WPA_ALG_NONE)
+ 		ret = 0;
+ 	if (ret)
+diff --git a/src/drivers/driver_nl80211.h b/src/drivers/driver_nl80211.h
+index 618746e..d66f739 100644
+--- a/src/drivers/driver_nl80211.h
++++ b/src/drivers/driver_nl80211.h
+@@ -130,6 +130,13 @@ struct wpa_driver_nl80211_data {
+ 	int has_capability;
+ 	int has_driver_key_mgmt;
+ 
++#ifdef CONFIG_TENDONIN
++	u8 pending_gtk[32];
++	size_t pending_gtk_len;
++	u32 pending_gtk_suite;
++	u8 pending_gtk_idx;
++#endif /* CONFIG_TENDONIN */
++
+ 	int operstate;
+ 
+ 	int scan_complete_events;
+diff --git a/src/wps/wps.c b/src/wps/wps.c
+index fd5bd93..9516e49 100644
+--- a/src/wps/wps.c
++++ b/src/wps/wps.c
+@@ -429,7 +429,11 @@ struct wpabuf * wps_build_assoc_req_ie(enum wps_request_type req_type)
+ 
+ 	wpabuf_put_u8(ie, WLAN_EID_VENDOR_SPECIFIC);
+ 	len = wpabuf_put(ie, 1);
++#ifdef CONFIG_TENDONIN
++	wpabuf_put_be32(ie, WPS_DEV_OUI_NIN);
++#else /* CONFIG_TENDONIN */
+ 	wpabuf_put_be32(ie, WPS_DEV_OUI_WFA);
++#endif /* CONFIG_TENDONIN */
+ 
+ 	if (wps_build_version(ie) ||
+ 	    wps_build_req_type(ie, req_type) ||
+@@ -463,7 +467,11 @@ struct wpabuf * wps_build_assoc_resp_ie(void)
+ 
+ 	wpabuf_put_u8(ie, WLAN_EID_VENDOR_SPECIFIC);
+ 	len = wpabuf_put(ie, 1);
++#ifdef CONFIG_TENDONIN
++	wpabuf_put_be32(ie, WPS_DEV_OUI_NIN);
++#else /* CONFIG_TENDONIN */
+ 	wpabuf_put_be32(ie, WPS_DEV_OUI_WFA);
++#endif /* CONFIG_TENDONIN */
+ 
+ 	if (wps_build_version(ie) ||
+ 	    wps_build_resp_type(ie, WPS_RESP_AP) ||
+diff --git a/src/wps/wps_attr_build.c b/src/wps/wps_attr_build.c
+index f372256..33b133b 100644
+--- a/src/wps/wps_attr_build.c
++++ b/src/wps/wps_attr_build.c
+@@ -211,6 +211,11 @@ int wps_build_wfa_ext(struct wpabuf *msg, int req_to_enroll,
+ {
+ 	u8 *len;
+ 
++#ifdef CONFIG_TENDONIN
++	/* The Wii U implements WPS 1.0 and does not advertise WFA Version2. */
++	return 0;
++#endif /* CONFIG_TENDONIN */
++
+ #ifdef CONFIG_WPS_TESTING
+ 	if (WPS_VERSION == 0x10)
+ 		return 0;
+@@ -481,7 +486,11 @@ struct wpabuf * wps_ie_encapsulate(struct wpabuf *data)
+ 			frag_len = 251;
+ 		wpabuf_put_u8(ie, WLAN_EID_VENDOR_SPECIFIC);
+ 		wpabuf_put_u8(ie, 4 + frag_len);
++#ifdef CONFIG_TENDONIN
++		wpabuf_put_be32(ie, WPS_DEV_OUI_NIN);
++#else /* CONFIG_TENDONIN */
+ 		wpabuf_put_be32(ie, WPS_DEV_OUI_WFA);
++#endif /* CONFIG_TENDONIN */
+ 		wpabuf_put_data(ie, pos, frag_len);
+ 		pos += frag_len;
+ 	}
+diff --git a/src/wps/wps_common.c b/src/wps/wps_common.c
+index 747dc47..373ce52 100644
+--- a/src/wps/wps_common.c
++++ b/src/wps/wps_common.c
+@@ -112,6 +112,19 @@ int wps_derive_keys(struct wps_data *wps)
+ 	hmac_sha256_vector(dhkey, sizeof(dhkey), 3, addr, len, kdk);
+ 	wpa_hexdump_key(MSG_DEBUG, "WPS: KDK", kdk, sizeof(kdk));
+ 
++#ifdef CONFIG_TENDONIN
++	{
++		u8 rotate_data[3];
++
++		os_memcpy(rotate_data, kdk, sizeof(rotate_data));
++		os_memmove(kdk, kdk + sizeof(rotate_data),
++			   sizeof(kdk) - sizeof(rotate_data));
++		os_memcpy(kdk + sizeof(kdk) - sizeof(rotate_data), rotate_data,
++			  sizeof(rotate_data));
++		wpa_hexdump_key(MSG_DEBUG, "WPS: KDK_ROT3", kdk, sizeof(kdk));
++	}
++#endif /* CONFIG_TENDONIN */
++
+ 	wps_kdf(kdk, NULL, 0, "Wi-Fi Easy and Secure Key Derivation",
+ 		keys, sizeof(keys));
+ 	os_memcpy(wps->authkey, keys, WPS_AUTHKEY_LEN);
+diff --git a/src/wps/wps_defs.h b/src/wps/wps_defs.h
+index ddaeda5..412544b 100644
+--- a/src/wps/wps_defs.h
++++ b/src/wps/wps_defs.h
+@@ -281,6 +281,7 @@ enum wps_assoc_state {
+ 
+ 
+ #define WPS_DEV_OUI_WFA 0x0050f204
++#define WPS_DEV_OUI_NIN ((0x00a4c0e1 << 8) | 0xf4)
+ 
+ enum wps_dev_categ {
+ 	WPS_DEV_COMPUTER = 1,
+diff --git a/src/wps/wps_registrar.c b/src/wps/wps_registrar.c
+index f49784f..4e1dcef 100644
+--- a/src/wps/wps_registrar.c
++++ b/src/wps/wps_registrar.c
+@@ -596,6 +596,7 @@ static int wps_build_sel_reg_config_methods(struct wps_registrar *reg,
+ 	if (!reg->sel_reg_union)
+ 		return 0;
+ 	methods = reg->wps->config_methods;
++#ifndef CONFIG_TENDONIN
+ 	methods &= ~WPS_CONFIG_PUSHBUTTON;
+ 	methods &= ~(WPS_CONFIG_VIRT_PUSHBUTTON |
+ 		     WPS_CONFIG_PHY_PUSHBUTTON);
+@@ -603,6 +604,7 @@ static int wps_build_sel_reg_config_methods(struct wps_registrar *reg,
+ 		wps_set_pushbutton(&methods, reg->wps->config_methods);
+ 	if (reg->sel_reg_config_methods_override >= 0)
+ 		methods = reg->sel_reg_config_methods_override;
++#endif /* CONFIG_TENDONIN */
+ 	wpa_printf(MSG_DEBUG, "WPS:  * Selected Registrar Config Methods (%x)",
+ 		   methods);
+ 	wpabuf_put_be16(msg, ATTR_SELECTED_REGISTRAR_CONFIG_METHODS);
+@@ -620,9 +622,12 @@ static int wps_build_probe_config_methods(struct wps_registrar *reg,
+ 	 * These are the methods that the AP supports as an Enrollee for adding
+ 	 * external Registrars.
+ 	 */
+-	methods = reg->wps->config_methods & ~WPS_CONFIG_PUSHBUTTON;
++	methods = reg->wps->config_methods;
++#ifndef CONFIG_TENDONIN
++	methods &= ~WPS_CONFIG_PUSHBUTTON;
+ 	methods &= ~(WPS_CONFIG_VIRT_PUSHBUTTON |
+ 		     WPS_CONFIG_PHY_PUSHBUTTON);
++#endif /* CONFIG_TENDONIN */
+ 	wpa_printf(MSG_DEBUG, "WPS:  * Config Methods (%x)", methods);
+ 	wpabuf_put_be16(msg, ATTR_CONFIG_METHODS);
+ 	wpabuf_put_be16(msg, 2);

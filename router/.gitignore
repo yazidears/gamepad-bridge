@@ -1,0 +1,5 @@
+/build/
+/frame-proxy
+*.token
+__pycache__/
+/private-gamepad/

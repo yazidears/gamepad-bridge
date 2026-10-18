@@ -1,0 +1,14 @@
+name: Tests
+on: [push, pull_request]
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 build.py --test
+      - run: python3 -m unittest discover -v
+  router:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -C router && make -C router check

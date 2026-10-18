@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+build/
+mac-capture
+audio-capture
+*.log
+*.pcap
+*.bin
+*.sock
+*.tar
+*.tar.gz
+.local/
+router/frame-proxy
+router/build/
